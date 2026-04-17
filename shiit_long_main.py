@@ -9,10 +9,12 @@ import signal
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from loguru import logger
 
 from src.collectors.binance_market import BinanceMarketCollector
 from src.collectors.binance_square import BinanceSquareCollector
@@ -21,12 +23,40 @@ from src.storage import Database
 
 # 配置
 CONFIG = {
-    "top_gainers_limit": 50,       # 涨幅榜数量
-    "square_fetch_limit": 20,      # 广场热度抓取数量（前N个）
+    "top_gainers_limit": 60,       # 涨幅榜数量
+    "square_fetch_limit": 60,      # 广场热度抓取数量（前N个）
     "square_delay": 3.0,           # 广场抓取间隔（秒）
-    "schedule_interval_minutes": 15,  # 定时执行间隔（分钟）
+    "schedule_interval_minutes": 10,  # 定时执行间隔（分钟）
     "db_path": "data/shiit_long.db",  # 数据库路径
+    "log_path": "logs/shiit_long.log",  # 日志文件路径
 }
+
+
+def setup_logger(log_path: str):
+    """配置日志系统"""
+    # 移除默认的 stderr handler
+    logger.remove()
+
+    # 添加控制台输出（带颜色）
+    logger.add(
+        sys.stderr,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
+        level="INFO",
+        colorize=True,
+    )
+
+    # 确保日志目录存在
+    Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+
+    # 添加文件输出（按天轮转，保留30天）
+    logger.add(
+        log_path,
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
+        level="INFO",
+        rotation="00:00",  # 每天午夜轮转
+        retention="30 days",  # 保留30天
+        encoding="utf-8",
+    )
 
 
 class ShiitLongCollector:
@@ -47,10 +77,9 @@ class ShiitLongCollector:
         snapshot_time = datetime.now()
         start_time = time.time()
 
-        print()
-        print("=" * 70)
-        print(f"[{snapshot_time.strftime('%Y-%m-%d %H:%M:%S')}] 开始数据采集")
-        print("=" * 70)
+        logger.info("=" * 60)
+        logger.info(f"开始数据采集 [{snapshot_time.strftime('%Y-%m-%d %H:%M:%S')}]")
+        logger.info("=" * 60)
 
         market_count = 0
         square_count = 0
@@ -60,8 +89,7 @@ class ShiitLongCollector:
 
         try:
             # Step 1: 获取涨幅榜
-            print(f"\n[1/2] 获取涨幅榜 Top {self.config['top_gainers_limit']}...")
-            print("-" * 50)
+            logger.info(f"[1/2] 获取涨幅榜 Top {self.config['top_gainers_limit']}...")
 
             market_collector = BinanceMarketCollector()
             try:
@@ -69,26 +97,24 @@ class ShiitLongCollector:
                     self.config["top_gainers_limit"]
                 )
                 market_count = len(top_gainers)
-                print(f"获取到 {market_count} 个币种")
+                logger.info(f"获取到 {market_count} 个币种")
 
                 # 保存到数据库
                 self.db.save_market_snapshots(top_gainers, snapshot_time)
-                print(f"已保存到数据库")
+                logger.info("已保存到数据库")
 
                 # 显示前5
-                print(f"\n{'排名':<4} {'币种':<10} {'涨幅':<10}")
-                for i, t in enumerate(top_gainers[:5], 1):
-                    print(f"{i:<4} {t.base_asset:<10} {t.price_change_percent:>7.2f}%")
-                if market_count > 5:
-                    print("...")
+                top5_info = " | ".join(
+                    [f"{t.base_asset}: {t.price_change_percent:+.2f}%" for t in top_gainers[:5]]
+                )
+                logger.info(f"Top5: {top5_info}")
 
             finally:
                 await market_collector.close()
 
             # Step 2: 抓取广场热度
             fetch_limit = min(self.config["square_fetch_limit"], market_count)
-            print(f"\n[2/2] 抓取广场热度 (前 {fetch_limit} 个币种)...")
-            print("-" * 50)
+            logger.info(f"[2/2] 抓取广场热度 (前 {fetch_limit} 个币种)...")
 
             symbols = [t.base_asset for t in top_gainers[:fetch_limit]]
 
@@ -102,7 +128,7 @@ class ShiitLongCollector:
 
                 # 保存到数据库
                 self.db.save_square_hotness(hotness_results, snapshot_time)
-                print(f"\n已保存 {square_count} 条热度数据 (成功: {square_success})")
+                logger.info(f"已保存 {square_count} 条热度数据 (成功: {square_success})")
 
             finally:
                 await square_collector.close()
@@ -110,7 +136,7 @@ class ShiitLongCollector:
         except Exception as e:
             status = "error"
             error_message = str(e)
-            print(f"\n[错误] 采集失败: {e}")
+            logger.error(f"采集失败: {e}")
 
         # 计算耗时
         duration = time.time() - start_time
@@ -127,11 +153,10 @@ class ShiitLongCollector:
         )
 
         # 输出统计
-        print()
-        print("=" * 70)
-        print(f"采集完成 | 耗时: {duration:.1f}秒 | 状态: {status}")
-        print(f"市场数据: {market_count} 条 | 热度数据: {square_count} 条 (成功 {square_success})")
-        print("=" * 70)
+        logger.info("=" * 60)
+        logger.info(f"采集完成 | 耗时: {duration:.1f}秒 | 状态: {status}")
+        logger.info(f"市场数据: {market_count} 条 | 热度数据: {square_count} 条 (成功 {square_success})")
+        logger.info("=" * 60)
 
         return {
             "snapshot_time": snapshot_time,
@@ -163,20 +188,19 @@ class ShiitLongCollector:
         # 启动调度器
         scheduler.start()
 
-        print()
-        print("=" * 70)
-        print("山寨币数据采集服务已启动")
-        print("=" * 70)
-        print(f"执行间隔: 每 {interval_minutes} 分钟")
-        print(f"数据库: {self.config['db_path']}")
-        print(f"涨幅榜数量: {self.config['top_gainers_limit']}")
-        print(f"热度抓取数量: {self.config['square_fetch_limit']}")
-        print("-" * 70)
-        print("按 Ctrl+C 停止服务")
-        print("=" * 70)
+        logger.info("=" * 60)
+        logger.info("山寨币数据采集服务已启动")
+        logger.info("=" * 60)
+        logger.info(f"执行间隔: 每 {interval_minutes} 分钟")
+        logger.info(f"数据库: {self.config['db_path']}")
+        logger.info(f"日志文件: {self.config['log_path']}")
+        logger.info(f"涨幅榜数量: {self.config['top_gainers_limit']}")
+        logger.info(f"热度抓取数量: {self.config['square_fetch_limit']}")
+        logger.info("按 Ctrl+C 停止服务")
+        logger.info("=" * 60)
 
         # 立即执行一次
-        print("\n[启动] 立即执行首次采集...")
+        logger.info("立即执行首次采集...")
         await self.collect_once()
 
         # 保持运行
@@ -187,7 +211,7 @@ class ShiitLongCollector:
             pass
         finally:
             scheduler.shutdown()
-            print("\n调度器已停止")
+            logger.info("调度器已停止")
 
     def stop(self):
         """停止服务"""
@@ -200,7 +224,7 @@ _collector: Optional[ShiitLongCollector] = None
 
 def signal_handler(signum, frame):
     """处理退出信号"""
-    print("\n\n收到退出信号，正在停止...")
+    logger.warning("收到退出信号，正在停止...")
     if _collector:
         _collector.stop()
 
@@ -230,6 +254,9 @@ async def main():
                 print(f"无效的热度数量参数: {arg}")
                 sys.exit(1)
 
+    # 初始化日志
+    setup_logger(CONFIG["log_path"])
+
     _collector = ShiitLongCollector(CONFIG)
 
     if run_once:
@@ -252,12 +279,12 @@ def print_usage():
 
 选项:
     --once              单次执行模式（不启动定时任务）
-    --interval=N        设置执行间隔（分钟），默认15
-    --square-limit=N    设置热度抓取数量，默认20
+    --interval=N        设置执行间隔（分钟），默认10
+    --square-limit=N    设置热度抓取数量，默认60
     --help              显示此帮助信息
 
 示例:
-    # 启动定时服务（每15分钟执行）
+    # 启动定时服务（每10分钟执行）
     python shiit_long_main.py
 
     # 每30分钟执行一次
@@ -270,7 +297,9 @@ def print_usage():
     python shiit_long_main.py --square-limit=10
 
     # 后台运行
-    nohup python shiit_long_main.py > logs/shiit_long.log 2>&1 &
+    nohup python3 shiit_long_main.py > /dev/null 2>&1 &
+
+日志文件位置: logs/shiit_long.log
 """)
 
 

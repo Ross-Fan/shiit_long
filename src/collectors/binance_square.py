@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 from playwright.async_api import async_playwright, Browser
+from loguru import logger
 
 
 # 特殊值标记
@@ -134,7 +135,7 @@ class BinanceSquareCollector:
             )
 
         except Exception as e:
-            print(f"  [错误] {symbol} 抓取失败: {e}")
+            logger.warning(f"{symbol} 抓取失败: {e}")
             return SquareHotness(
                 symbol=symbol,
                 view_count=FETCH_FAILED,
@@ -160,19 +161,18 @@ class BinanceSquareCollector:
         total = len(symbols)
 
         for i, symbol in enumerate(symbols):
-            print(f"[{i+1}/{total}] 抓取 {symbol}...")
+            logger.debug(f"[{i+1}/{total}] 抓取 {symbol}...")
 
             result = await self.fetch_symbol_hotness(symbol)
             results.append(result)
 
             if result.success:
-                print(f"  -> views: {result.view_count:,}, discuss: {result.discuss_count:,}")
+                logger.debug(f"{symbol}: views={result.view_count:,}, discuss={result.discuss_count:,}")
             else:
-                print(f"  -> 抓取失败")
+                logger.debug(f"{symbol}: 抓取失败")
 
             # 延迟，避免被封
             if i < total - 1:  # 最后一个不需要延迟
-                print(f"  等待 {self._delay} 秒...")
                 await asyncio.sleep(self._delay)
 
         return results
