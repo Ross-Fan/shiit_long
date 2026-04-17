@@ -72,7 +72,7 @@ python shiit_long_main.py --once
 python shiit_long_main.py --square-limit=10
 
 # 后台运行
-nohup python shiit_long_main.py > logs/shiit_long.log 2>&1 &
+nohup python3 shiit_long_main.py > logs/shiit_long.log 2>&1 &
 
 # 查看帮助
 python shiit_long_main.py --help
