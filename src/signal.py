@@ -13,7 +13,7 @@ from loguru import logger
 class SignalConfig:
     """信号过滤条件配置"""
     # 涨幅榜排名条件
-    max_rank: int = 30                    # 排名 <= 30
+    max_rank: int = 100                    # 排名 <= 30
 
     # 动能条件
     min_volume_ratio: float = 1.5         # 成交量比 >= 1.5 (放量)
