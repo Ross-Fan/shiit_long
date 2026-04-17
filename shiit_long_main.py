@@ -43,8 +43,8 @@ SIGNAL_CONFIG = SignalConfig(
     min_price_ratio=1.0,
     min_discuss_count=0,
     min_view_count=0,
-    min_price_change=5.0,
-    max_price_change=300.0,
+    min_price_change=3.0,
+    max_price_change=30.0,
 )
 
 
