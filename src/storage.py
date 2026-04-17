@@ -12,6 +12,7 @@ from contextlib import contextmanager
 
 from src.collectors.binance_market import TickerData
 from src.collectors.binance_square import SquareHotness
+from src.collectors.momentum import MomentumData
 
 
 class Database:
@@ -103,12 +104,58 @@ class Database:
                     market_count INTEGER DEFAULT 0,
                     square_count INTEGER DEFAULT 0,
                     square_success INTEGER DEFAULT 0,
+                    momentum_count INTEGER DEFAULT 0,
+                    momentum_success INTEGER DEFAULT 0,
                     duration_seconds REAL DEFAULT 0,
                     status TEXT DEFAULT 'success',
                     error_message TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            # 动能数据表
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS momentum_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    snapshot_time DATETIME NOT NULL,
+                    symbol TEXT NOT NULL,
+                    base_asset TEXT NOT NULL,
+                    current_price REAL NOT NULL,
+                    current_volume REAL NOT NULL,
+                    avg_volume_20 REAL NOT NULL,
+                    volume_ratio REAL NOT NULL,
+                    avg_price_5d REAL NOT NULL,
+                    price_ratio REAL NOT NULL,
+                    momentum_score REAL NOT NULL,
+                    success INTEGER NOT NULL,
+                    error_msg TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # 动能数据索引
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_momentum_snapshot_time
+                ON momentum_snapshots(snapshot_time)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_momentum_symbol
+                ON momentum_snapshots(symbol, snapshot_time)
+            """)
+
+            # 数据库迁移：为旧表添加新列
+            self._migrate_tables(cursor)
+
+    def _migrate_tables(self, cursor):
+        """数据库迁移：为旧表添加新列"""
+        # 检查 collection_logs 表是否有 momentum_count 列
+        cursor.execute("PRAGMA table_info(collection_logs)")
+        columns = {row[1] for row in cursor.fetchall()}
+
+        if "momentum_count" not in columns:
+            cursor.execute("ALTER TABLE collection_logs ADD COLUMN momentum_count INTEGER DEFAULT 0")
+        if "momentum_success" not in columns:
+            cursor.execute("ALTER TABLE collection_logs ADD COLUMN momentum_success INTEGER DEFAULT 0")
 
     def save_market_snapshots(
         self,
@@ -201,6 +248,58 @@ class Database:
 
             return len(rows)
 
+    def save_momentum_snapshots(
+        self,
+        momentum_list: List[MomentumData],
+        snapshot_time: Optional[datetime] = None
+    ) -> int:
+        """
+        保存动能数据
+
+        Args:
+            momentum_list: 动能数据列表
+            snapshot_time: 快照时间，默认当前时间
+
+        Returns:
+            插入的记录数
+        """
+        if not momentum_list:
+            return 0
+
+        if snapshot_time is None:
+            snapshot_time = datetime.now()
+
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+
+            rows = [
+                (
+                    snapshot_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    m.symbol,
+                    m.base_asset,
+                    m.current_price,
+                    m.current_volume,
+                    m.avg_volume_20,
+                    m.volume_ratio,
+                    m.avg_price_5d,
+                    m.price_ratio,
+                    m.momentum_score,
+                    1 if m.success else 0,
+                    m.error_msg
+                )
+                for m in momentum_list
+            ]
+
+            cursor.executemany("""
+                INSERT INTO momentum_snapshots
+                (snapshot_time, symbol, base_asset, current_price, current_volume,
+                 avg_volume_20, volume_ratio, avg_price_5d, price_ratio,
+                 momentum_score, success, error_msg)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, rows)
+
+            return len(rows)
+
     def log_collection(
         self,
         snapshot_time: datetime,
@@ -209,7 +308,9 @@ class Database:
         square_success: int,
         duration_seconds: float,
         status: str = "success",
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
+        momentum_count: int = 0,
+        momentum_success: int = 0
     ):
         """记录采集任务日志"""
         with self._get_conn() as conn:
@@ -217,13 +318,15 @@ class Database:
             cursor.execute("""
                 INSERT INTO collection_logs
                 (snapshot_time, market_count, square_count, square_success,
-                 duration_seconds, status, error_message)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                 momentum_count, momentum_success, duration_seconds, status, error_message)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 snapshot_time.strftime("%Y-%m-%d %H:%M:%S"),
                 market_count,
                 square_count,
                 square_success,
+                momentum_count,
+                momentum_success,
                 duration_seconds,
                 status,
                 error_message
@@ -252,6 +355,19 @@ class Database:
                     SELECT MAX(snapshot_time) FROM square_hotness
                 )
                 ORDER BY hotness_score DESC
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_latest_momentum(self) -> List[dict]:
+        """获取最新一次动能数据"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM momentum_snapshots
+                WHERE snapshot_time = (
+                    SELECT MAX(snapshot_time) FROM momentum_snapshots
+                )
+                ORDER BY momentum_score DESC
             """)
             return [dict(row) for row in cursor.fetchall()]
 

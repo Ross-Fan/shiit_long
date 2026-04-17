@@ -18,6 +18,7 @@ from loguru import logger
 
 from src.collectors.binance_market import BinanceMarketCollector
 from src.collectors.binance_square import BinanceSquareCollector
+from src.collectors.momentum import MomentumCollector
 from src.storage import Database
 
 
@@ -26,6 +27,7 @@ CONFIG = {
     "top_gainers_limit": 60,       # 涨幅榜数量
     "square_fetch_limit": 60,      # 广场热度抓取数量（前N个）
     "square_delay": 3.0,           # 广场抓取间隔（秒）
+    "momentum_concurrency": 10,    # 动能数据并发数
     "schedule_interval_minutes": 10,  # 定时执行间隔（分钟）
     "db_path": "data/shiit_long.db",  # 数据库路径
     "log_path": "logs/shiit_long.log",  # 日志文件路径
@@ -84,12 +86,15 @@ class ShiitLongCollector:
         market_count = 0
         square_count = 0
         square_success = 0
+        momentum_count = 0
+        momentum_success = 0
         error_message = None
         status = "success"
+        top_gainers = []
 
         try:
             # Step 1: 获取涨幅榜
-            logger.info(f"[1/2] 获取涨幅榜 Top {self.config['top_gainers_limit']}...")
+            logger.info(f"[1/3] 获取涨幅榜 Top {self.config['top_gainers_limit']}...")
 
             market_collector = BinanceMarketCollector()
             try:
@@ -114,7 +119,7 @@ class ShiitLongCollector:
 
             # Step 2: 抓取广场热度
             fetch_limit = min(self.config["square_fetch_limit"], market_count)
-            logger.info(f"[2/2] 抓取广场热度 (前 {fetch_limit} 个币种)...")
+            logger.info(f"[2/3] 抓取广场热度 (前 {fetch_limit} 个币种)...")
 
             symbols = [t.base_asset for t in top_gainers[:fetch_limit]]
 
@@ -133,6 +138,38 @@ class ShiitLongCollector:
             finally:
                 await square_collector.close()
 
+            # Step 3: 获取动能数据（成交量比、价格比）
+            logger.info(f"[3/3] 获取动能数据 ({market_count} 个币种)...")
+
+            # 使用完整的交易对符号
+            trade_symbols = [t.symbol for t in top_gainers]
+
+            momentum_collector = MomentumCollector()
+            try:
+                momentum_results = await momentum_collector.fetch_batch_momentum(
+                    trade_symbols,
+                    concurrency=self.config["momentum_concurrency"]
+                )
+                momentum_count = len(momentum_results)
+                momentum_success = sum(1 for m in momentum_results if m.success)
+
+                # 保存到数据库
+                self.db.save_momentum_snapshots(momentum_results, snapshot_time)
+                logger.info(f"已保存 {momentum_count} 条动能数据 (成功: {momentum_success})")
+
+                # 显示动能最强的前3个
+                successful = [m for m in momentum_results if m.success]
+                if successful:
+                    top3_momentum = sorted(successful, key=lambda x: x.momentum_score, reverse=True)[:3]
+                    top3_info = " | ".join(
+                        [f"{m.base_asset}: vol={m.volume_ratio:.1f}x, price={m.price_ratio:.2f}x"
+                         for m in top3_momentum]
+                    )
+                    logger.info(f"动能Top3: {top3_info}")
+
+            finally:
+                await momentum_collector.close()
+
         except Exception as e:
             status = "error"
             error_message = str(e)
@@ -149,13 +186,15 @@ class ShiitLongCollector:
             square_success=square_success,
             duration_seconds=duration,
             status=status,
-            error_message=error_message
+            error_message=error_message,
+            momentum_count=momentum_count,
+            momentum_success=momentum_success
         )
 
         # 输出统计
         logger.info("=" * 60)
         logger.info(f"采集完成 | 耗时: {duration:.1f}秒 | 状态: {status}")
-        logger.info(f"市场数据: {market_count} 条 | 热度数据: {square_count} 条 (成功 {square_success})")
+        logger.info(f"市场: {market_count} | 热度: {square_count}({square_success}成功) | 动能: {momentum_count}({momentum_success}成功)")
         logger.info("=" * 60)
 
         return {
@@ -163,6 +202,8 @@ class ShiitLongCollector:
             "market_count": market_count,
             "square_count": square_count,
             "square_success": square_success,
+            "momentum_count": momentum_count,
+            "momentum_success": momentum_success,
             "duration": duration,
             "status": status
         }
