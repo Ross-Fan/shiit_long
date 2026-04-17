@@ -25,7 +25,7 @@ cd shiit_long
 ### 2. 创建虚拟环境（推荐）
 
 ```bash
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate  # Linux/Mac
 # 或 venv\Scripts\activate  # Windows
 ```
@@ -39,7 +39,7 @@ pip install -r requirements.txt
 ### 4. 安装 Playwright 浏览器
 
 ```bash
-python -m playwright install chromium
+python3 -m playwright install chromium
 ```
 
 > 如果在无头服务器上安装失败，可能需要先安装系统依赖：
@@ -49,8 +49,34 @@ python -m playwright install chromium
 >     libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
 >     libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2
 > ```
+或者:
+```bash
+python3 -m playwright install-deps chromium
+```
 
 ## 使用方法
+
+### 启动主程序（推荐）
+
+```bash
+# 启动定时服务（默认每15分钟执行一次）
+python shiit_long_main.py
+
+# 自定义执行间隔（每30分钟）
+python shiit_long_main.py --interval=30
+
+# 只执行一次（不启动定时任务）
+python shiit_long_main.py --once
+
+# 自定义热度抓取数量（默认20个）
+python shiit_long_main.py --square-limit=10
+
+# 后台运行
+nohup python shiit_long_main.py > logs/shiit_long.log 2>&1 &
+
+# 查看帮助
+python shiit_long_main.py --help
+```
 
 ### 快速测试
 
@@ -104,18 +130,20 @@ shiit_long/
 ├── README.md               # 本文件
 ├── requirements.txt        # Python 依赖
 ├── design.md              # 详细设计文档
+├── shiit_long_main.py      # 主程序入口（定时采集）
 ├── test_collectors.py      # 测试脚本
 │
 ├── src/
 │   ├── __init__.py
+│   ├── storage.py          # SQLite 数据存储层
 │   └── collectors/
 │       ├── __init__.py
 │       ├── binance_market.py   # 涨幅榜采集器
 │       └── binance_square.py   # 广场热度爬虫
 │
-├── config/                 # 配置文件（待实现）
-├── data/                   # 数据存储（待实现）
-└── logs/                   # 日志文件（待实现）
+├── data/
+│   └── shiit_long.db       # SQLite 数据库
+└── logs/                   # 日志目录
 ```
 
 ## 数据结构
@@ -176,10 +204,10 @@ EXCLUDE_STABLECOINS = {'USDT', 'USDC', ...}
 ## 后续开发
 
 - [ ] WebSocket 实时数据（Funding Rate / K线）
-- [ ] SQLite 数据存储
+- [x] SQLite 数据存储
 - [ ] 波动率计算
 - [ ] 入场信号生成
-- [ ] 定时任务调度
+- [x] 定时任务调度
 
 ## 故障排查
 

@@ -15,5 +15,8 @@ playwright>=1.40.0
 # 日志
 loguru>=0.7.0
 
+# 定时任务
+apscheduler>=3.10.0
+
 # 类型支持
 typing-extensions>=4.8.0
