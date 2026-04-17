@@ -68,6 +68,7 @@ def setup_logger(log_path: str):
         rotation="00:00",
         retention="30 days",
         encoding="utf-8",
+        colorize=False,  # 禁用颜色，避免写入ANSI转义码
     )
 
 
