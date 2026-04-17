@@ -19,6 +19,7 @@ from loguru import logger
 from src.collectors.binance_market import BinanceMarketCollector
 from src.collectors.binance_square import BinanceSquareCollector
 from src.collectors.momentum import MomentumCollector
+from src.signal import SignalConfig, SignalGenerator, generate_signals_from_db
 from src.storage import Database
 
 
@@ -32,6 +33,17 @@ CONFIG = {
     "db_path": "data/shiit_long.db",  # 数据库路径
     "log_path": "logs/shiit_long.log",  # 日志文件路径
 }
+
+# 入场信号配置
+SIGNAL_CONFIG = SignalConfig(
+    max_rank=30,                   # 排名 <= 30
+    min_volume_ratio=0.5,          # 成交量比 >= 0.5
+    min_price_ratio=1.0,           # 价格比 >= 1.0 (站上5日均价)
+    min_discuss_count=0,           # 讨论数 (暂不限制)
+    min_view_count=0,              # 浏览量 (暂不限制)
+    min_price_change=5.0,          # 最小涨幅 5%
+    max_price_change=300.0,        # 最大涨幅 300%
+)
 
 
 def setup_logger(log_path: str):
@@ -94,7 +106,7 @@ class ShiitLongCollector:
 
         try:
             # Step 1: 获取涨幅榜
-            logger.info(f"[1/3] 获取涨幅榜 Top {self.config['top_gainers_limit']}...")
+            logger.info(f"[1/4] 获取涨幅榜 Top {self.config['top_gainers_limit']}...")
 
             market_collector = BinanceMarketCollector()
             try:
@@ -119,7 +131,7 @@ class ShiitLongCollector:
 
             # Step 2: 抓取广场热度
             fetch_limit = min(self.config["square_fetch_limit"], market_count)
-            logger.info(f"[2/3] 抓取广场热度 (前 {fetch_limit} 个币种)...")
+            logger.info(f"[2/4] 抓取广场热度 (前 {fetch_limit} 个币种)...")
 
             symbols = [t.base_asset for t in top_gainers[:fetch_limit]]
 
@@ -139,7 +151,7 @@ class ShiitLongCollector:
                 await square_collector.close()
 
             # Step 3: 获取动能数据（成交量比、价格比）
-            logger.info(f"[3/3] 获取动能数据 ({market_count} 个币种)...")
+            logger.info(f"[3/4] 获取动能数据 ({market_count} 个币种)...")
 
             # 使用完整的交易对符号
             trade_symbols = [t.symbol for t in top_gainers]
@@ -169,6 +181,34 @@ class ShiitLongCollector:
 
             finally:
                 await momentum_collector.close()
+
+            # Step 4: 生成入场信号
+            logger.info("[4/4] 扫描入场信号...")
+            signals = generate_signals_from_db(self.db, SIGNAL_CONFIG)
+
+            if signals:
+                # 保存信号到数据库
+                self.db.save_entry_signals(signals)
+
+                # 醒目打印信号
+                logger.warning("=" * 60)
+                logger.warning(f"[SIGNAL] 发现 {len(signals)} 个入场信号!")
+                logger.warning("=" * 60)
+
+                for s in signals:
+                    logger.warning(
+                        f"[SIGNAL] {s.base_asset:<8} | "
+                        f"价格: {s.price:.6f} | "
+                        f"涨幅: {s.price_change_percent:>6.1f}% | "
+                        f"排名: #{s.rank:<3} | "
+                        f"放量: {s.volume_ratio:.1f}x | "
+                        f"价格比: {s.price_ratio:.2f}x | "
+                        f"强度: {s.signal_strength}"
+                    )
+
+                logger.warning("=" * 60)
+            else:
+                logger.info("无入场信号")
 
         except Exception as e:
             status = "error"

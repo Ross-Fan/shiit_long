@@ -4,7 +4,7 @@
 
 山寨币合约做多策略的数据采集模块，用于 Binance Futures 交易。
 
-**核心逻辑**: 热度 → OI资金验证 → 波动率入场 → 固定止损
+**核心逻辑**: 热度 → 动能验证 → 入场信号 → 固定止损
 
 ## 技术栈
 
@@ -19,7 +19,7 @@
 
 ```
 shiit_long/
-├── shiit_long_main.py      # 主程序入口（定时采集）
+├── shiit_long_main.py      # 主程序入口（定时采集+信号生成）
 ├── test_collectors.py      # 测试脚本
 ├── requirements.txt
 ├── design.md               # 详细设计文档
@@ -27,10 +27,11 @@ shiit_long/
 │
 ├── src/
 │   ├── storage.py          # SQLite 数据存储层
+│   ├── signal.py           # 入场信号生成器
 │   └── collectors/
 │       ├── binance_market.py   # 涨幅榜采集
 │       ├── binance_square.py   # 广场热度爬虫
-│       └── momentum.py         # 动能数据采集（成交量比/价格比）
+│       └── momentum.py         # 动能数据采集
 │
 ├── data/
 │   └── shiit_long.db       # SQLite 数据库
@@ -43,157 +44,111 @@ shiit_long/
 1. **涨幅榜 Top60** (`src/collectors/binance_market.py`)
    - API: `GET /fapi/v1/ticker/24hr`
    - 过滤主流币/稳定币/杠杆代币
-   - 返回 `TickerData` 列表
 
 2. **广场热度爬虫** (`src/collectors/binance_square.py`)
    - URL: `https://www.binance.com/en/square/hashtag/{TICKER}`
    - 顺序执行，3秒间隔
-   - 抓取 views、discussing
-   - 失败返回 -1，success=False
 
 3. **动能数据采集** (`src/collectors/momentum.py`)
-   - 成交量比 = 当前5分钟成交量 / 过去20个5分钟平均成交量
-   - 价格比 = 当前价格 / 过去5天收盘价平均值
-   - 动能评分 = 成交量比 × 价格比
-   - API: `GET /fapi/v1/klines` (5m和1d周期)
+   - 成交量比 = 当前5分钟成交量 / 过去20个5分钟平均
+   - 价格比 = 当前价格 / 过去5天收盘价平均
 
-4. **SQLite 数据存储** (`src/storage.py`)
-   - `market_snapshots` 表：涨幅榜快照（含排名）
-   - `square_hotness` 表：广场热度数据
-   - `momentum_snapshots` 表：动能数据
-   - `collection_logs` 表：采集任务日志
+4. **入场信号生成** (`src/signal.py`)
+   - 多条件过滤：排名、涨幅、成交量比、价格比
+   - 信号强度评估：强/中/弱
+   - 自动保存到数据库
 
 5. **定时采集主程序** (`shiit_long_main.py`)
-   - 默认每 10 分钟执行一次
-   - 三步采集：涨幅榜 → 广场热度 → 动能数据
+   - 4步流程：涨幅榜 → 广场热度 → 动能数据 → 入场信号
    - 日志同时输出到控制台和文件
-   - 优雅退出（Ctrl+C）
 
-## 待实现功能
-
-- OI（持仓量）数据采集
-- 入场信号生成
-- WebSocket 实时数据
-
-## 关键类
+## 入场信号配置
 
 ```python
-# 涨幅榜数据 (src/collectors/binance_market.py)
-@dataclass
-class TickerData:
-    symbol: str              # PEPEUSDT
-    base_asset: str          # PEPE
-    price: float
-    price_change_percent: float
-    volume: float
-    quote_volume: float
-
-# 广场热度 (src/collectors/binance_square.py)
-@dataclass
-class SquareHotness:
-    symbol: str
-    view_count: int          # -1 表示失败
-    discuss_count: int
-    hotness_score: float
-    success: bool
-
-# 动能数据 (src/collectors/momentum.py)
-@dataclass
-class MomentumData:
-    symbol: str              # PEPEUSDT
-    base_asset: str          # PEPE
-    current_price: float
-    current_volume: float    # 当前5分钟成交量
-    avg_volume_20: float     # 过去20个5分钟平均成交量
-    volume_ratio: float      # 成交量比值
-    avg_price_5d: float      # 过去5天收盘价平均
-    price_ratio: float       # 价格比值
-    momentum_score: float    # 动能评分 = volume_ratio * price_ratio
-    success: bool
+# shiit_long_main.py 中的 SIGNAL_CONFIG
+SignalConfig(
+    max_rank=30,                # 排名 <= 30
+    min_volume_ratio=0.5,       # 成交量比 >= 0.5
+    min_price_ratio=1.0,        # 价格比 >= 1.0 (站上5日均价)
+    min_discuss_count=0,        # 讨论数 (暂不限制)
+    min_view_count=0,           # 浏览量 (暂不限制)
+    min_price_change=5.0,       # 最小涨幅 5%
+    max_price_change=300.0,     # 最大涨幅 300%
+)
 ```
+
+**信号触发条件（全部满足）：**
+- 涨幅榜排名 ≤ 30
+- 24h涨幅在 5%-300% 之间
+- 成交量比 ≥ 0.5（当前vs过去20个5分钟均值）
+- 价格比 ≥ 1.0（站上5日均价）
 
 ## 数据库表结构
 
 ```sql
 -- 市场快照
-market_snapshots (
-    id, snapshot_time, symbol, base_asset, price,
-    price_change_percent, volume, quote_volume, rank
-)
+market_snapshots (symbol, base_asset, price, price_change_percent, rank)
 
 -- 广场热度
-square_hotness (
-    id, snapshot_time, symbol, view_count,
-    discuss_count, hotness_score, success
-)
+square_hotness (symbol, view_count, discuss_count, hotness_score)
 
 -- 动能数据
-momentum_snapshots (
-    id, snapshot_time, symbol, base_asset, current_price,
-    current_volume, avg_volume_20, volume_ratio,
-    avg_price_5d, price_ratio, momentum_score, success
-)
+momentum_snapshots (symbol, volume_ratio, price_ratio, momentum_score)
 
--- 采集日志
-collection_logs (
-    id, snapshot_time, market_count, square_count, square_success,
-    momentum_count, momentum_success, duration_seconds, status
-)
+-- 入场信号
+entry_signals (symbol, price, rank, volume_ratio, price_ratio, signal_strength)
 ```
 
 ## 常用命令
 
 ```bash
-# 启动定时服务（每10分钟）
+# 启动定时服务
 python shiit_long_main.py
-
-# 自定义间隔（每30分钟）
-python shiit_long_main.py --interval=30
 
 # 单次执行
 python shiit_long_main.py --once
 
-# 自定义热度抓取数量
-python shiit_long_main.py --square-limit=10
-
-# 后台运行（日志自动写入文件）
+# 后台运行
 nohup python3 shiit_long_main.py > /dev/null 2>&1 &
 
 # 查看日志
 tail -f logs/shiit_long.log
 
-# 测试各采集器
-python -m src.collectors.binance_market
-python -m src.collectors.binance_square
-python -m src.collectors.momentum
+# 测试信号生成
+python -m src.signal
 ```
 
-## 配置参数
-
-主程序配置在 `shiit_long_main.py` 中：
+## 关键类
 
 ```python
-CONFIG = {
-    "top_gainers_limit": 60,       # 涨幅榜数量
-    "square_fetch_limit": 60,      # 广场热度抓取数量
-    "square_delay": 3.0,           # 广场抓取间隔（秒）
-    "momentum_concurrency": 10,    # 动能数据并发数
-    "schedule_interval_minutes": 10,  # 定时间隔（分钟）
-    "db_path": "data/shiit_long.db",
-    "log_path": "logs/shiit_long.log",
-}
+# 入场信号 (src/signal.py)
+@dataclass
+class EntrySignal:
+    symbol: str              # PEPEUSDT
+    base_asset: str          # PEPE
+    price: float
+    price_change_percent: float
+    rank: int
+    volume_ratio: float      # 成交量比
+    price_ratio: float       # 价格比
+    signal_strength: str     # 强/中/弱
+    conditions_met: List[str]  # 满足的条件
+
+# 信号生成器 (src/signal.py)
+class SignalGenerator:
+    def generate_signals(market, momentum, hotness) -> List[EntrySignal]
 ```
 
-## 动能指标说明
+## 待实现功能
 
-- **成交量比 > 1**: 表示放量，当前成交活跃
-- **价格比 > 1**: 表示价格高于近期均值，处于上涨趋势
-- **动能评分**: 综合指标，越高表示动能越强
+- OI（持仓量）数据采集
+- WebSocket 实时数据
+- 交易执行模块
 
-## 设计文档
+## 信号强度说明
 
-详细设计见 `design.md`，包含：
-- 数据库表结构
-- WebSocket 流订阅策略
-- 波动率计算公式
-- 完整数据流程图
+| 强度 | 得分 | 特征 |
+|------|------|------|
+| 强 | ≥6 | 高放量(3x+)、突破均价(1.2x+)、高热度、Top10排名 |
+| 中 | 3-5 | 放量(1.5-3x)、突破均价、有热度 |
+| 弱 | <3 | 刚满足基本条件 |

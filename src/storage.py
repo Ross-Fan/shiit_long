@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from src.collectors.binance_market import TickerData
 from src.collectors.binance_square import SquareHotness
 from src.collectors.momentum import MomentumData
+from src.signal import EntrySignal
 
 
 class Database:
@@ -145,6 +146,37 @@ class Database:
 
             # 数据库迁移：为旧表添加新列
             self._migrate_tables(cursor)
+
+            # 入场信号表
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS entry_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    signal_time DATETIME NOT NULL,
+                    symbol TEXT NOT NULL,
+                    base_asset TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    price_change_percent REAL NOT NULL,
+                    rank INTEGER NOT NULL,
+                    volume_ratio REAL NOT NULL,
+                    price_ratio REAL NOT NULL,
+                    momentum_score REAL NOT NULL,
+                    view_count INTEGER DEFAULT 0,
+                    discuss_count INTEGER DEFAULT 0,
+                    signal_strength TEXT NOT NULL,
+                    conditions_met TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # 入场信号索引
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_signal_time
+                ON entry_signals(signal_time)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_signal_symbol
+                ON entry_signals(symbol, signal_time)
+            """)
 
     def _migrate_tables(self, cursor):
         """数据库迁移：为旧表添加新列"""
@@ -331,6 +363,65 @@ class Database:
                 status,
                 error_message
             ))
+
+    def save_entry_signals(
+        self,
+        signals: List[EntrySignal]
+    ) -> int:
+        """
+        保存入场信号
+
+        Args:
+            signals: 入场信号列表
+
+        Returns:
+            插入的记录数
+        """
+        if not signals:
+            return 0
+
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+
+            rows = [
+                (
+                    s.signal_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    s.symbol,
+                    s.base_asset,
+                    s.price,
+                    s.price_change_percent,
+                    s.rank,
+                    s.volume_ratio,
+                    s.price_ratio,
+                    s.momentum_score,
+                    s.view_count,
+                    s.discuss_count,
+                    s.signal_strength,
+                    ", ".join(s.conditions_met)
+                )
+                for s in signals
+            ]
+
+            cursor.executemany("""
+                INSERT INTO entry_signals
+                (signal_time, symbol, base_asset, price, price_change_percent,
+                 rank, volume_ratio, price_ratio, momentum_score,
+                 view_count, discuss_count, signal_strength, conditions_met)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, rows)
+
+            return len(rows)
+
+    def get_latest_signals(self, limit: int = 20) -> List[dict]:
+        """获取最近的入场信号"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM entry_signals
+                ORDER BY signal_time DESC, momentum_score DESC
+                LIMIT ?
+            """, (limit,))
+            return [dict(row) for row in cursor.fetchall()]
 
     def get_latest_market_snapshot(self) -> List[dict]:
         """获取最新一次市场快照"""

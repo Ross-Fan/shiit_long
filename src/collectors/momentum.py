@@ -104,13 +104,13 @@ class MomentumCollector:
         base_asset = symbol.replace("USDT", "")
 
         # 并行获取5分钟K线和日K线
-        klines_5m_task = self._fetch_klines(symbol, "5m", 21)  # 当前1根 + 过去20根
-        klines_1d_task = self._fetch_klines(symbol, "1d", 6)   # 当前1根 + 过去5根
+        klines_5m_task = self._fetch_klines(symbol, "5m", 22)  # 1未完成 + 1最新完成 + 20历史
+        klines_1d_task = self._fetch_klines(symbol, "1d", 7)   # 1未完成 + 1最新完成 + 5历史
 
         klines_5m, klines_1d = await asyncio.gather(klines_5m_task, klines_1d_task)
 
         # 检查数据有效性
-        if not klines_5m or len(klines_5m) < 21:
+        if not klines_5m or len(klines_5m) < 22:
             return MomentumData(
                 symbol=symbol,
                 base_asset=base_asset,
@@ -125,7 +125,7 @@ class MomentumCollector:
                 error_msg="5分钟K线数据不足"
             )
 
-        if not klines_1d or len(klines_1d) < 6:
+        if not klines_1d or len(klines_1d) < 7:
             return MomentumData(
                 symbol=symbol,
                 base_asset=base_asset,
@@ -145,12 +145,14 @@ class MomentumCollector:
             #           quote_volume, trades, taker_buy_volume, taker_buy_quote_volume, ignore]
 
             # 5分钟数据处理
-            # 最后一根是当前未完成的K线，取倒数第二根作为最近完成的
-            current_5m = klines_5m[-1]
-            past_20_5m = klines_5m[:-1]  # 过去20根完成的K线
+            # klines_5m[-1] 是当前未完成的K线，跳过
+            # klines_5m[-2] 是最近完成的K线，用于计算当前成交量
+            # klines_5m[-22:-2] 是过去20根完成的K线，用于计算平均值
+            latest_completed_5m = klines_5m[-2]
+            past_20_5m = klines_5m[-22:-2]  # 过去20根完成的K线
 
-            current_price = float(current_5m[4])  # close price
-            current_volume = float(current_5m[7])  # quote_volume (USDT成交额)
+            current_price = float(latest_completed_5m[4])  # close price
+            current_volume = float(latest_completed_5m[7])  # quote_volume (USDT成交额)
 
             # 计算过去20个5分钟的平均成交量
             volumes_20 = [float(k[7]) for k in past_20_5m]
@@ -160,8 +162,9 @@ class MomentumCollector:
             volume_ratio = current_volume / avg_volume_20 if avg_volume_20 > 0 else 0
 
             # 日K线数据处理
-            # 最后一根是当天未完成的，取过去5天的收盘价
-            past_5d = klines_1d[:-1]  # 过去5天完成的K线
+            # klines_1d[-1] 是当天未完成的，跳过
+            # klines_1d[-7:-1] 是过去6天完成的K线（取5天计算均价）
+            past_5d = klines_1d[-6:-1]  # 过去5天完成的K线
 
             # 计算过去5天收盘价平均值
             closes_5d = [float(k[4]) for k in past_5d]
